@@ -1,0 +1,356 @@
+Description: kBuild and any package using it FTBFS if the build path contains special
+ characters (mostly anything except [a-zA-Z0-9\-]). This is fixed by using the static
+ linking method from GCC3PLAIN.kmk on all other profiles.
+Author: Felix Geyer <debfx-pkg@fobos.de>
+Bug: http://svn.netlabs.org/kbuild/ticket/94
+
+Index: kbuild/kBuild/tools/GCC32.kmk
+===================================================================
+--- kbuild.orig/kBuild/tools/GCC32.kmk
++++ kbuild/kBuild/tools/GCC32.kmk
+@@ -54,6 +54,7 @@
+ TOOL_GCC32_CXX       ?= $(TOOL_GCC32_PREFIX)g++$(TOOL_GCC32_SUFFIX) -m32
+ TOOL_GCC32_AS        ?= $(TOOL_GCC32_PREFIX)gcc$(TOOL_GCC32_SUFFIX) -m32
+ TOOL_GCC32_AR        ?= $(TOOL_GCC32_PREFIX2)ar$(TOOL_GCC32_SUFFIX2)
++TOOL_GCC32_RANLIB    ?= $(TOOL_GCC32_PREFIX)ranlib$(HOSTSUFF_EXE)
+ TOOL_GCC32_LD        ?= $(TOOL_GCC32_PREFIX)gcc$(TOOL_GCC32_SUFFIX) -m32
+ if1of ($(KBUILD_HOST), solaris)
+  TOOL_GCC32_LD_SYSMOD ?= $(TOOL_GCC32_PREFIX3)ld$(TOOL_GCC32_SUFFIX3)
+@@ -235,20 +236,21 @@
+ # @param    $(deps)		Other dependencies.
+ # @param    $(othersrc) Unhandled sources.
+ # @param    $(outbase)  Output basename (full). Use this for list files and such.
+-TOOL_GCC32_LINK_LIBRARY_OUTPUT = $(out).ar-script
++TOOL_GCC32_LINK_LIBRARY_OUTPUT =
+ TOOL_GCC32_LINK_LIBRARY_DEPEND = $(othersrc)
+ TOOL_GCC32_LINK_LIBRARY_DEPORD =
+ define TOOL_GCC32_LINK_LIBRARY_CMDS
+-	$(QUIET)$(APPEND) $(out).ar-script 'CREATE $(out)'
+-	$(QUIET)$(APPEND) -n $(out).ar-script \
+-		$(foreach o,$(objs), 'ADDMOD $(o)') \
+-		$(foreach o,$(filter-out %.def %.imp %.dll,$(othersrc)), 'ADDLIB $(o)')
+-	$(if $(filter %.def %.imp %.dll,$(othersrc))\
+-		,$(TOOL_GCC32_AR_IMP) -o $(outbase).imp.a $(filter %.def %.imp %.dll,$(othersrc))\
+-		 $(NL)$(TAB)$(QUIET)$(APPEND) $(out).ar-script 'ADDLIB $(outbase).imp.a')
+-	$(QUIET)$(APPEND) $(out).ar-script 'SAVE'
+-	$(QUIET)$(APPEND) $(out).ar-script 'END'
+-	$(QUIET)$(REDIRECT) -rti $(out).ar-script -- $(TOOL_GCC32_AR) -M
++	$(QUIET)$(TOOL_GCC32_AR) $(flags) $(out) $(objs)
++	$(foreach lib,$(othersrc)\
++		,$(NL)$(TAB)$(call MSG_AR_MERGE,$(target),$(out),$(lib)) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(MKDIR) -p $(dir $(outbase))/ar.tmp.dir/ \
++		$(NL)$(TAB)$(QUIET)(cd $(dir $(outbase))ar.tmp.dir/ \
++			&& $(TOOL_GCC32_AR) x $(abspath $(lib)) \
++			&& $(TOOL_GCC32_AR) $(flags) $(out) *) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))/ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(RMDIR) $(dir $(outbase))ar.tmp.dir/)
++	$(QUIET)$(TOOL_GCC32_RANLIB) $(out)
+ endef
+ 
+ 
+Index: kbuild/kBuild/tools/GCC3.kmk
+===================================================================
+--- kbuild.orig/kBuild/tools/GCC3.kmk
++++ kbuild/kBuild/tools/GCC3.kmk
+@@ -52,6 +52,7 @@
+ TOOL_GCC3_CXX       ?= $(TOOL_GCC3_PREFIX)g++$(TOOL_GCC3_SUFFIX)
+ TOOL_GCC3_AS        ?= $(TOOL_GCC3_PREFIX)gcc$(TOOL_GCC3_SUFFIX)
+ TOOL_GCC3_AR        ?= $(TOOL_GCC3_PREFIX2)ar$(TOOL_GCC3_SUFFIX2)
++TOOL_GCC3_RANLIB ?= ranlib$(HOSTSUFF_EXE)
+ ifeq ($(KBUILD_TARGET),os2)
+  TOOL_GCC3_AR_IMP   ?= $(TOOL_GCC3_PREFIX3)emximp$(TOOL_GCC3_SUFFIX3)
+ else
+@@ -234,21 +235,21 @@
+ # @param    $(deps)		Other dependencies.
+ # @param    $(othersrc) Unhandled sources.
+ # @param    $(outbase)  Output basename (full). Use this for list files and such.
+-TOOL_GCC3_LINK_LIBRARY_OUTPUT = $(out).ar-script
+-TOOL_GCC3_LINK_LIBRARY_OUTPUT_MAYBE = $(outbase).imp.a
++TOOL_GCC3_LINK_LIBRARY_OUTPUT =
+ TOOL_GCC3_LINK_LIBRARY_DEPEND = $(othersrc)
+ TOOL_GCC3_LINK_LIBRARY_DEPORD =
+ define TOOL_GCC3_LINK_LIBRARY_CMDS
+-	$(QUIET)$(APPEND) $(out).ar-script 'CREATE $(out)'
+-	$(QUIET)$(APPEND) -n $(out).ar-script \
+-		$(foreach o,$(objs), 'ADDMOD $(o)') \
+-		$(foreach o,$(filter-out %.def %.imp %.dll,$(othersrc)), 'ADDLIB $(o)')
+-	$(if $(filter %.def %.imp %.dll,$(othersrc))\
+-		,$(TOOL_GCC3_AR_IMP) -o $(outbase).imp.a $(filter %.def %.imp %.dll,$(othersrc))\
+-		 $(NL)$(TAB)$(QUIET)$(APPEND) $(out).ar-script 'ADDLIB $(outbase).imp.a')
+-	$(QUIET)$(APPEND) $(out).ar-script 'SAVE'
+-	$(QUIET)$(APPEND) $(out).ar-script 'END'
+-	$(QUIET)$(REDIRECT) -rti $(out).ar-script -- $(TOOL_GCC3_AR) -M
++	$(QUIET)$(TOOL_GCC3_AR) $(flags) $(out) $(objs)
++	$(foreach lib,$(othersrc)\
++		,$(NL)$(TAB)$(call MSG_AR_MERGE,$(target),$(out),$(lib)) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(MKDIR) -p $(dir $(outbase))/ar.tmp.dir/ \
++		$(NL)$(TAB)$(QUIET)(cd $(dir $(outbase))ar.tmp.dir/ \
++			&& $(TOOL_GCC3_AR) x $(abspath $(lib)) \
++			&& $(TOOL_GCC3_AR) $(flags) $(out) *) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))/ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(RMDIR) $(dir $(outbase))ar.tmp.dir/)
++	$(QUIET)$(TOOL_GCC3_RANLIB) $(out)
+ endef
+ 
+ 
+Index: kbuild/kBuild/tools/GCC64.kmk
+===================================================================
+--- kbuild.orig/kBuild/tools/GCC64.kmk
++++ kbuild/kBuild/tools/GCC64.kmk
+@@ -53,6 +53,7 @@
+ TOOL_GCC64_CXX       ?= $(TOOL_GCC64_PREFIX)g++$(TOOL_GCC64_SUFFIX) -m64
+ TOOL_GCC64_AS        ?= $(TOOL_GCC64_PREFIX)gcc$(TOOL_GCC64_SUFFIX) -m64
+ TOOL_GCC64_AR        ?= $(TOOL_GCC64_PREFIX2)ar$(TOOL_GCC64_SUFFIX2)
++TOOL_GCC64_RANLIB    ?= $(TOOL_GCC64_PREFIX)ranlib$(TOOL_GCC64_SUFFIX)
+ TOOL_GCC64_LD        ?= $(TOOL_GCC64_PREFIX)gcc$(TOOL_GCC64_SUFFIX) -m64
+ if1of ($(KBUILD_HOST), solaris)
+  TOOL_GCC64_LD_SYSMOD ?= $(TOOL_GCC64_PREFIX3)ld$(TOOL_GCC64_SUFFIX3)
+@@ -233,17 +234,21 @@
+ # @param    $(deps)		Other dependencies.
+ # @param    $(othersrc) Unhandled sources.
+ # @param    $(outbase)  Output basename (full). Use this for list files and such.
+-TOOL_GCC64_LINK_LIBRARY_OUTPUT = $(out).ar-script
++TOOL_GCC64_LINK_LIBRARY_OUTPUT =
+ TOOL_GCC64_LINK_LIBRARY_DEPEND = $(othersrc)
+ TOOL_GCC64_LINK_LIBRARY_DEPORD =
+ define TOOL_GCC64_LINK_LIBRARY_CMDS
+-	$(QUIET)$(APPEND) $(out).ar-script 'CREATE $(out)'
+-	$(QUIET)$(APPEND) -n $(out).ar-script \
+-		$(foreach o,$(objs), 'ADDMOD $(o)') \
+-		$(foreach o,$(othersrc), 'ADDLIB $(o)')
+-	$(QUIET)$(APPEND) $(out).ar-script 'SAVE'
+-	$(QUIET)$(APPEND) $(out).ar-script 'END'
+-	$(QUIET)$(REDIRECT) -rti $(out).ar-script -- $(TOOL_GCC64_AR) -M
++	$(QUIET)$(TOOL_GCC64_AR) $(flags) $(out) $(objs)
++	$(foreach lib,$(othersrc)\
++		,$(NL)$(TAB)$(call MSG_AR_MERGE,$(target),$(out),$(lib)) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(MKDIR) -p $(dir $(outbase))/ar.tmp.dir/ \
++		$(NL)$(TAB)$(QUIET)(cd $(dir $(outbase))ar.tmp.dir/ \
++			&& $(TOOL_GCC64_AR) x $(abspath $(lib)) \
++			&& $(TOOL_GCC64_AR) $(flags) $(out) *) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))/ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(RMDIR) $(dir $(outbase))ar.tmp.dir/)
++	$(QUIET)$(TOOL_GCC64_RANLIB) $(out)
+ endef
+ 
+ 
+Index: kbuild/kBuild/tools/GXX32.kmk
+===================================================================
+--- kbuild.orig/kBuild/tools/GXX32.kmk
++++ kbuild/kBuild/tools/GXX32.kmk
+@@ -54,6 +54,7 @@
+ TOOL_GXX32_PCH      ?= $(TOOL_GXX32_CXX)
+ TOOL_GXX32_AS       ?= $(TOOL_GXX32_PREFIX)gcc$(TOOL_GXX32_SUFFIX) -m32
+ TOOL_GXX32_AR       ?= $(TOOL_GXX32_PREFIX2)ar$(TOOL_GXX32_SUFFIX2)
++TOOL_GXX32_RANLIB   ?= $(TOOL_GXX32_PREFIX)ranlib$(TOOL_GXX32_SUFFIX)
+ TOOL_GXX32_LD       ?= $(TOOL_GXX32_PREFIX)g++$(TOOL_GXX32_SUFFIX) -m32
+ if1of ($(KBUILD_HOST), solaris)
+  TOOL_GXX32_LD_SYSMOD ?= $(TOOL_GXX32_PREFIX3)ld$(TOOL_GXX32_SUFFIX3)
+@@ -261,20 +262,21 @@
+ # @param    $(deps)		Other dependencies.
+ # @param    $(othersrc) Unhandled sources.
+ # @param    $(outbase)  Output basename (full). Use this for list files and such.
+-TOOL_GXX32_LINK_LIBRARY_OUTPUT = $(out).ar-script
++TOOL_GXX32_LINK_LIBRARY_OUTPUT =
+ TOOL_GXX32_LINK_LIBRARY_DEPEND = $(othersrc)
+ TOOL_GXX32_LINK_LIBRARY_DEPORD =
+ define TOOL_GXX32_LINK_LIBRARY_CMDS
+-	$(QUIET)$(APPEND) $(out).ar-script 'CREATE $(out)'
+-	$(QUIET)$(APPEND) -n $(out).ar-script \
+-		$(foreach o,$(filter-out %.h.gch,$(objs)), 'ADDMOD $(o)') \
+-		$(foreach o,$(filter-out %.def %.imp %.dll,$(othersrc)), 'ADDLIB $(o)')
+-	$(if $(filter %.def %.imp %.dll,$(othersrc))\
+-		,$(TOOL_GXX32_AR_IMP) -o $(outbase).imp.a $(filter %.def %.imp %.dll,$(othersrc))\
+-		 $(NL)$(TAB)$(QUIET)$(APPEND) $(out).ar-script 'ADDLIB $(outbase).imp.a')
+-	$(QUIET)$(APPEND) $(out).ar-script 'SAVE'
+-	$(QUIET)$(APPEND) $(out).ar-script 'END'
+-	$(QUIET)$(REDIRECT) -rti $(out).ar-script -- $(TOOL_GXX32_AR) -M
++	$(QUIET)$(TOOL_GXX32_AR) $(flags) $(out) $(objs)
++	$(foreach lib,$(othersrc)\
++		,$(NL)$(TAB)$(call MSG_AR_MERGE,$(target),$(out),$(lib)) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(MKDIR) -p $(dir $(outbase))/ar.tmp.dir/ \
++		$(NL)$(TAB)$(QUIET)(cd $(dir $(outbase))ar.tmp.dir/ \
++			&& $(TOOL_GXX32_AR) x $(abspath $(lib)) \
++			&& $(TOOL_GXX32_AR) $(flags) $(out) *) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))/ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(RMDIR) $(dir $(outbase))ar.tmp.dir/)
++	$(QUIET)$(TOOL_GXX32_RANLIB) $(out)
+ endef
+ 
+ 
+Index: kbuild/kBuild/tools/GXX3.kmk
+===================================================================
+--- kbuild.orig/kBuild/tools/GXX3.kmk
++++ kbuild/kBuild/tools/GXX3.kmk
+@@ -54,6 +54,7 @@
+ TOOL_GXX3_PCH       ?= $(TOOL_GXX3_CXX)
+ TOOL_GXX3_AS        ?= $(TOOL_GXX3_PREFIX)gcc$(TOOL_GXX3_SUFFIX)
+ TOOL_GXX3_AR        ?= $(TOOL_GXX3_PREFIX2)ar$(TOOL_GXX3_SUFFIX2)
++TOOL_GXX3_RANLIB    ?= $(TOOL_GXX3_PREFIX)ranlib$(TOOL_GXX3_SUFFIX)
+ ifeq ($(KBUILD_TARGET),os2)
+  TOOL_GXX3_AR_IMP   ?= $(TOOL_GXX3_PREFIX3)emximp$(TOOL_GXX3_SUFFIX3)
+ else
+@@ -263,21 +264,21 @@
+ # @param    $(deps)     Other dependencies.
+ # @param    $(othersrc) Unhandled sources.
+ # @param    $(outbase)  Output basename (full). Use this for list files and such.
+-TOOL_GXX3_LINK_LIBRARY_OUTPUT = $(out).ar-script
+-TOOL_GXX3_LINK_LIBRARY_OUTPUT_MAYBE = $(outbase).imp.a
++TOOL_GXX3_LINK_LIBRARY_OUTPUT =
+ TOOL_GXX3_LINK_LIBRARY_DEPEND = $(othersrc)
+ TOOL_GXX3_LINK_LIBRARY_DEPORD =
+ define TOOL_GXX3_LINK_LIBRARY_CMDS
+-	$(QUIET)$(APPEND) $(out).ar-script 'CREATE $(out)'
+-	$(QUIET)$(APPEND) -n $(out).ar-script \
+-		$(foreach o,$(filter-out %.h.gch,$(objs)), 'ADDMOD $(o)') \
+-		$(foreach o,$(filter-out %.def %.imp %.dll,$(othersrc)), 'ADDLIB $(o)')
+-	$(if $(filter %.def %.imp %.dll,$(othersrc))\
+-		,$(TOOL_GXX3_AR_IMP) -o $(outbase).imp.a $(filter %.def %.imp %.dll,$(othersrc))\
+-		 $(NL)$(TAB)$(QUIET)$(APPEND) $(out).ar-script 'ADDLIB $(outbase).imp.a')
+-	$(QUIET)$(APPEND) $(out).ar-script 'SAVE'
+-	$(QUIET)$(APPEND) $(out).ar-script 'END'
+-	$(QUIET)$(REDIRECT) -rti $(out).ar-script -- $(TOOL_GXX3_AR) -M
++	$(QUIET)$(TOOL_GXX3_AR) $(flags) $(out) $(objs)
++	$(foreach lib,$(othersrc)\
++		,$(NL)$(TAB)$(call MSG_AR_MERGE,$(target),$(out),$(lib)) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(MKDIR) -p $(dir $(outbase))/ar.tmp.dir/ \
++		$(NL)$(TAB)$(QUIET)(cd $(dir $(outbase))ar.tmp.dir/ \
++			&& $(TOOL_GXX3_AR) x $(abspath $(lib)) \
++			&& $(TOOL_GXX3_AR) $(flags) $(out) *) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))/ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(RMDIR) $(dir $(outbase))ar.tmp.dir/)
++	$(QUIET)$(TOOL_GXX3_RANLIB) $(out)
+ endef
+ 
+ 
+Index: kbuild/kBuild/tools/GXX64.kmk
+===================================================================
+--- kbuild.orig/kBuild/tools/GXX64.kmk
++++ kbuild/kBuild/tools/GXX64.kmk
+@@ -54,6 +54,7 @@
+ TOOL_GXX64_PCH      ?= $(TOOL_GXX64_CXX)
+ TOOL_GXX64_AS       ?= $(TOOL_GXX64_PREFIX)gcc$(TOOL_GXX64_SUFFIX) -m64
+ TOOL_GXX64_AR       ?= $(TOOL_GXX64_PREFIX2)ar$(TOOL_GXX64_SUFFIX2)
++TOOL_GXX64_RANLIB   ?= $(TOOL_GXX64_PREFIX)ranlib$(TOOL_GXX64_SUFFIX)
+ TOOL_GXX64_LD       ?= $(TOOL_GXX64_PREFIX)g++$(TOOL_GXX64_SUFFIX) -m64
+ if1of ($(KBUILD_HOST), solaris)
+  TOOL_GXX64_LD_SYSMOD ?= $(TOOL_GXX64_PREFIX3)ld$(TOOL_GXX64_SUFFIX3)
+@@ -261,17 +262,21 @@
+ # @param    $(deps)		Other dependencies.
+ # @param    $(othersrc) Unhandled sources.
+ # @param    $(outbase)  Output basename (full). Use this for list files and such.
+-TOOL_GXX64_LINK_LIBRARY_OUTPUT = $(out).ar-script
++TOOL_GXX64_LINK_LIBRARY_OUTPUT =
+ TOOL_GXX64_LINK_LIBRARY_DEPEND = $(othersrc)
+ TOOL_GXX64_LINK_LIBRARY_DEPORD =
+ define TOOL_GXX64_LINK_LIBRARY_CMDS
+-	$(QUIET)$(APPEND) $(out).ar-script 'CREATE $(out)'
+-	$(QUIET)$(APPEND) -n $(out).ar-script \
+-		$(foreach o,$(filter-out %.h.gch,$(objs)), 'ADDMOD $(o)') \
+-		$(foreach o,$(othersrc), 'ADDLIB $(o)')
+-	$(QUIET)$(APPEND) $(out).ar-script 'SAVE'
+-	$(QUIET)$(APPEND) $(out).ar-script 'END'
+-	$(QUIET)$(REDIRECT) -rti $(out).ar-script -- $(TOOL_GXX64_AR) -M
++	$(QUIET)$(TOOL_GXX64_AR) $(flags) $(out) $(objs)
++	$(foreach lib,$(othersrc)\
++		,$(NL)$(TAB)$(call MSG_AR_MERGE,$(target),$(out),$(lib)) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(MKDIR) -p $(dir $(outbase))/ar.tmp.dir/ \
++		$(NL)$(TAB)$(QUIET)(cd $(dir $(outbase))ar.tmp.dir/ \
++			&& $(TOOL_GXX64_AR) x $(abspath $(lib)) \
++			&& $(TOOL_GXX64_AR) $(flags) $(out) *) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))/ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(RMDIR) $(dir $(outbase))ar.tmp.dir/)
++	$(QUIET)$(TOOL_GXX64_RANLIB) $(out)
+ endef
+ 
+ 
+Index: kbuild/kBuild/tools/MINGW32.kmk
+===================================================================
+--- kbuild.orig/kBuild/tools/MINGW32.kmk
++++ kbuild/kBuild/tools/MINGW32.kmk
+@@ -81,6 +81,7 @@
+ TOOL_MINGW32_CXX ?= $(TOOL_MINGW32_PREFIX)g++$(TOOL_MINGW32_HOSTSUFF_EXE)
+ TOOL_MINGW32_AS  ?= $(TOOL_MINGW32_PREFIX)gcc$(TOOL_MINGW32_HOSTSUFF_EXE)
+ TOOL_MINGW32_AR  ?= $(TOOL_MINGW32_PREFIX)ar$(TOOL_MINGW32_HOSTSUFF_EXE)
++TOOL_MINGW32_RANLIB ?= $(TOOL_MINGW32_PREFIX)ranlib$(TOOL_MINGW32_HOSTSUFF_EXE)
+ ifndef TOOL_MINGW32_XCOMPILE# The gentoo package doesn't have g++.
+ TOOL_MINGW32_LD  ?= $(TOOL_MINGW32_PREFIX)g++$(TOOL_MINGW32_HOSTSUFF_EXE)
+ else
+@@ -200,17 +201,21 @@
+ # @param    $(deps)     Other dependencies.
+ #
+ # @param    $(outbase)  Output basename (full). Use this for list files and such.
+-TOOL_MINGW32_LINK_LIBRARY_OUTPUT = $(out).ar-script
++TOOL_MINGW32_LINK_LIBRARY_OUTPUT =
+ TOOL_MINGW32_LINK_LIBRARY_DEPEND = $(othersrc)
+ TOOL_MINGW32_LINK_LIBRARY_DEPORD =
+ define TOOL_MINGW32_LINK_LIBRARY_CMDS
+-	$(QUIET)$(APPEND) $(out).ar-script 'CREATE $(out)'
+-	$(QUIET)$(APPEND) -n $(out).ar-script \
+-		$(foreach o,$(objs), 'ADDMOD $(o)') \
+-		$(foreach o,$(othersrc), 'ADDLIB $(o)')
+-	$(QUIET)$(APPEND) $(out).ar-script 'SAVE'
+-	$(QUIET)$(APPEND) $(out).ar-script 'END'
+-	$(QUIET)$(TOOL_MINGW32_AR) -M < $(out).ar-script
++	$(QUIET)$(TOOL_MINGW32_AR) $(flags) $(out) $(objs)
++	$(foreach lib,$(othersrc)\
++		,$(NL)$(TAB)$(call MSG_AR_MERGE,$(target),$(out),$(lib)) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(MKDIR) -p $(dir $(outbase))/ar.tmp.dir/ \
++		$(NL)$(TAB)$(QUIET)(cd $(dir $(outbase))ar.tmp.dir/ \
++			&& $(TOOL_MINGW32_AR) x $(abspath $(lib)) \
++			&& $(TOOL_MINGW32_AR) $(flags) $(out) *) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))/ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(RMDIR) $(dir $(outbase))ar.tmp.dir/)
++	$(QUIET)$(TOOL_MINGW32_RANLIB) $(out)
+ endef
+ 
+ 
+Index: kbuild/kBuild/tools/XGCCAMD64LINUX.kmk
+===================================================================
+--- kbuild.orig/kBuild/tools/XGCCAMD64LINUX.kmk
++++ kbuild/kBuild/tools/XGCCAMD64LINUX.kmk
+@@ -73,6 +73,7 @@
+ TOOL_XGCCAMD64LINUX_CXX ?= $(TOOL_XGCCAMD64LINUX_PREFIX)g++$(TOOL_XGCCAMD64LINUX_SUFFIX)
+ TOOL_XGCCAMD64LINUX_AS  ?= $(TOOL_XGCCAMD64LINUX_PREFIX)gcc$(TOOL_XGCCAMD64LINUX_SUFFIX)
+ TOOL_XGCCAMD64LINUX_AR  ?= $(TOOL_XGCCAMD64LINUX_PREFIX2)ar$(TOOL_XGCCAMD64LINUX_SUFFIX2)
++TOOL_XGCCAMD64LINUX_RANLIB ?= $(TOOL_XGCCAMD64LINUX_PREFIX)ranlib$(TOOL_XGCCAMD64LINUX_SUFFIX)
+ TOOL_XGCCAMD64LINUX_LD  ?= $(TOOL_XGCCAMD64LINUX_PREFIX)g++$(TOOL_XGCCAMD64LINUX_SUFFIX)
+ TOOL_XGCCAMD64LINUX_LD_SYSMOD ?= $(TOOL_XGCCAMD64LINUX_PREFIX2)ld$(TOOL_XGCCAMD64LINUX_SUFFIX2)
+ 
+@@ -194,17 +195,21 @@
+ # @param    $(deps)		Other dependencies.
+ # @param    $(othersrc) Unhandled sources.
+ # @param    $(outbase)  Output basename (full). Use this for list files and such.
+-TOOL_XGCCAMD64LINUX_LINK_LIBRARY_OUTPUT = $(out).ar-script
++TOOL_XGCCAMD64LINUX_LINK_LIBRARY_OUTPUT =
+ TOOL_XGCCAMD64LINUX_LINK_LIBRARY_DEPEND = $(othersrc)
+ TOOL_XGCCAMD64LINUX_LINK_LIBRARY_DEPORD =
+ define TOOL_XGCCAMD64LINUX_LINK_LIBRARY_CMDS
+-	$(QUIET)$(APPEND) $(out).ar-script 'CREATE $(out)'
+-	$(QUIET)$(APPEND) -n $(out).ar-script \
+-		$(foreach o,$(objs), 'ADDMOD $(o)') \
+-		$(foreach o,$(othersrc), 'ADDLIB $(o)')
+-	$(QUIET)$(APPEND) $(out).ar-script 'SAVE'
+-	$(QUIET)$(APPEND) $(out).ar-script 'END'
+-	$(QUIET)$(REDIRECT) -rti $(out).ar-script -- $(TOOL_XGCCAMD64LINUX_AR) -M
++	$(QUIET)$(TOOL_XGCCAMD64LINUX_AR) $(flags) $(out) $(objs)
++	$(foreach lib,$(othersrc)\
++		,$(NL)$(TAB)$(call MSG_AR_MERGE,$(target),$(out),$(lib)) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(MKDIR) -p $(dir $(outbase))/ar.tmp.dir/ \
++		$(NL)$(TAB)$(QUIET)(cd $(dir $(outbase))ar.tmp.dir/ \
++			&& $(TOOL_XGCCAMD64LINUX_AR) x $(abspath $(lib)) \
++			&& $(TOOL_XGCCAMD64LINUX_AR) $(flags) $(out) *) \
++		$(NL)$(TAB)$(QUIET)$(RM_EXT) -f $(dir $(outbase))/ar.tmp.dir/* \
++		$(NL)$(TAB)$(QUIET)$(RMDIR) $(dir $(outbase))ar.tmp.dir/)
++	$(QUIET)$(TOOL_XGCCAMD64LINUX_RANLIB) $(out)
+ endef
+ 
+ 
