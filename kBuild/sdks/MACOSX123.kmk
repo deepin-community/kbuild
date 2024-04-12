@@ -1,10 +1,10 @@
-# $Id: MACOSX110.kmk 3603 2024-01-23 09:43:42Z bird $
+# $Id: MACOSX123.kmk 3596 2023-06-14 08:11:45Z bird $
 ## @file
-# kBuild SDK - Mac OS X v11.0 SDK.
+# kBuild SDK - Mac OS X v12.3 SDK.
 #
 
 #
-# Copyright (c) 2008-2020 knut st. osmundsen <bird-kBuild-spam-xx@anduin.net>
+# Copyright (c) 2008-2023 knut st. osmundsen <bird-kBuild-spam-xxiii@anduin.net>
 #
 # This file is part of kBuild.
 #
@@ -35,29 +35,28 @@ ifndef INCLUDED_DARWIN_COMMON_KMK
  include $(KBUILD_PATH)/darwin-common.kmk
 endif
 
-SDK_MACOSX110 := Mac OS X v11.0 SDK
+SDK_MACOSX123 := Mac OS X v12.3 SDK
 
 # SDK Specific Properties
-ifndef PATH_SDK_MACOSX110
- PATH_SDK_MACOSX110 := $(call DARWINCMN_FN_FIND_MACOSX_SDK,MacOSX11.0.sdk)
+ifndef PATH_SDK_MACOSX123
+ PATH_SDK_MACOSX123 := $(call DARWINCMN_FN_FIND_MACOSX_SDK,MacOSX12.3.sdk)
 else
  # Resolve any fancy stuff once and for all.
- PATH_SDK_MACOSX110 := $(PATH_SDK_MACOSX110)
+ PATH_SDK_MACOSX123 := $(PATH_SDK_MACOSX123)
 endif
-ifeq ($(PATH_SDK_MACOSX110),)
- $(warning $(call DARWINCMN_FN_ERROR_MACOSX_SDK,MacOSX11.0.sdk))
+ifeq ($(PATH_SDK_MACOSX123),)
+ $(warning $(call DARWINCMN_FN_ERROR_MACOSX_SDK,MacOSX12.3.sdk))
 endif
 
 ## The MAC_OS_X_VERSION_MIN_REQUIRED and MAC_OS_X_VERSION_MAX_ALLOWED value for this SDK.
-SDK_MACOSX110_VERSION_ARG   := 11.0
-SDK_MACOSX110_VERSION_VALUE := $(subst .,,$(SDK_MACOSX110_VERSION_ARG))000
+SDK_MACOSX123_VERSION_VALUE := 123000
 
 # General Properties (used by kBuild)
 # Note: The MAC_OS_X_VERSION_MAX_ALLOWED is left free for the SDK user to define.
-SDK_MACOSX110_DEFS        ?= MAC_OS_X_VERSION_MIN_REQUIRED=110000
-SDK_MACOSX110_CFLAGS      ?= -mmacosx-version-min=11.0 -isysroot "$(PATH_SDK_MACOSX110)"
-SDK_MACOSX110_CXXFLAGS    ?= -mmacosx-version-min=11.0 -isysroot "$(PATH_SDK_MACOSX110)"
-SDK_MACOSX110_OBJCFLAGS   ?= -mmacosx-version-min=11.0 -isysroot "$(PATH_SDK_MACOSX110)"
-SDK_MACOSX110_OBJCXXFLAGS ?= -mmacosx-version-min=11.0 -isysroot "$(PATH_SDK_MACOSX110)"
-SDK_MACOSX110_LDFLAGS     ?= -mmacosx-version-min=11.0 -isysroot "$(PATH_SDK_MACOSX110)"
+SDK_MACOSX123_DEFS        ?= MAC_OS_X_VERSION_MIN_REQUIRED=$(SDK_MACOSX123_VERSION_VALUE)
+SDK_MACOSX123_CFLAGS      ?= -mmacosx-version-min=12.3 -isysroot "$(PATH_SDK_MACOSX123)"
+SDK_MACOSX123_CXXFLAGS    ?= -mmacosx-version-min=12.3 -isysroot "$(PATH_SDK_MACOSX123)"
+SDK_MACOSX123_OBJCFLAGS   ?= -mmacosx-version-min=12.3 -isysroot "$(PATH_SDK_MACOSX123)"
+SDK_MACOSX123_OBJCXXFLAGS ?= -mmacosx-version-min=12.3 -isysroot "$(PATH_SDK_MACOSX123)"
+SDK_MACOSX123_LDFLAGS     ?= -mmacosx-version-min=12.3 -isysroot "$(PATH_SDK_MACOSX123)"
 
