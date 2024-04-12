@@ -1,3 +1,17 @@
+kbuild (1:0.1.9998svn3604+dfsg-1) unstable; urgency=medium
+
+  * Update copyright years
+  * New upstream version 0.1.9998svn3604+dfsg
+
+ -- Gianfranco Costamagna <locutusofborg@debian.org>  Thu, 28 Mar 2024 21:22:54 +0100
+
+kbuild (1:0.1.9998svn3589+dfsg-2) unstable; urgency=medium
+
+  * Fix to avoid strings.h usage, prefer string.h instead
+    Closes: #1066204
+
+ -- Gianfranco Costamagna <locutusofborg@debian.org>  Thu, 28 Mar 2024 17:06:47 +0100
+
 kbuild (1:0.1.9998svn3589+dfsg-1) unstable; urgency=medium
 
   * New upstream version 0.1.9998svn3589+dfsg
