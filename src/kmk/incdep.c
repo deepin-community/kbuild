@@ -1,5 +1,5 @@
 #ifdef CONFIG_WITH_INCLUDEDEP
-/* $Id: incdep.c 3565 2022-05-24 20:40:24Z bird $ */
+/* $Id: incdep.c 3628 2024-10-22 23:34:56Z bird $ */
 /** @file
  * incdep - Simple dependency files.
  */
@@ -94,8 +94,32 @@ extern PKFSCACHE g_pFsCache; /* dir-nt-bird.c for now */
 
 
 /*******************************************************************************
+* Defined Constants And Macros                                                 *
+********************************************************************************/
+/* Custom assertion macro */
+#if (!defined(NDEBUG) || 0) && defined(_MSC_VER)
+# define MY_ASSERT(expr) do { \
+    if (!!(expr)) { /* likely */ } \
+    else { fprintf (stderr, "assertion failed on line %u in incdep.c: %s\n", __LINE__, #expr); __debugbreak(); } \
+  } while (0)
+# undef assert
+# define assert(expr)     MY_ASSERT(expr)
+#else
+# define MY_ASSERT(expr)  ((void)0)
+#endif
+
+
+/*******************************************************************************
 *   Structures and Typedefs                                                    *
 *******************************************************************************/
+struct incdep_worker_data
+{
+    int worker_tid;                         /* -1 for main, index for the others. */
+    unsigned int done_count;                /* workers increment this */
+    unsigned int flushed_count;             /* main thread: flushed done count. */
+    unsigned int todo_count;                /* main thread: queued on todo */
+};
+
 struct incdep_variable_in_set
 {
     struct incdep_variable_in_set *next;
@@ -194,15 +218,17 @@ static int volatile incdep_hev_done_waiters;
 static int incdep_initialized;
 
 /* the list of files that needs reading. */
-static struct incdep * volatile incdep_head_todo;
-static struct incdep * volatile incdep_tail_todo;
+static struct incdep * volatile incdep_head_todo  = NULL;
+static struct incdep * volatile incdep_tail_todo  = NULL;
+static unsigned int volatile    incdep_count_todo = 0;
 
 /* the number of files that are currently being read. */
-static int volatile incdep_num_reading;
+static int volatile incdep_num_reading = 0;
 
 /* the list of files that have been read. */
-static struct incdep * volatile incdep_head_done;
-static struct incdep * volatile incdep_tail_done;
+static struct incdep * volatile incdep_head_done  = NULL;
+static struct incdep * volatile incdep_tail_done  = NULL;
+static unsigned int volatile    incdep_count_done = 0;
 
 
 /* The handles to the worker threads. */
@@ -232,6 +258,11 @@ static int volatile incdep_terminate;
 /* malloc zone for the incdep threads. */
 static malloc_zone_t *incdep_zone;
 #endif
+
+/* Worker specific data, the extra entry is for the main thread.
+   TODO: Move all parallel arrays in here to avoid unnecessary cacheline
+         sharing between worker threads. */
+static struct incdep_worker_data incdep_worker_data[INCDEP_MAX_THREADS + 1];
 
 
 /*******************************************************************************
@@ -395,6 +426,8 @@ incdep_lock(void)
   EnterCriticalSection (&incdep_mtx);
 #elif defined (__OS2__)
   _fmutex_request (&incdep_mtx, 0);
+#elif !defined(CONFIG_WITHOUT_THREADS)
+# error Misconfig?
 #endif
 }
 
@@ -584,12 +617,16 @@ incdep_freeit (struct incdep *cur)
 void
 incdep_worker (int thrd)
 {
+  struct incdep_worker_data *thrd_data = &incdep_worker_data[thrd];
+  thrd_data->worker_tid = thrd;
+
   incdep_lock ();
 
   while (!incdep_terminate)
    {
       /* get job from the todo list. */
 
+      struct incdep *tmp;
       struct incdep *cur = incdep_head_todo;
       if (!cur)
         {
@@ -597,9 +634,18 @@ incdep_worker (int thrd)
           continue;
         }
       if (cur->next)
-        incdep_head_todo = cur->next;
+        {
+          assert (incdep_count_todo > 1);
+          assert (cur != incdep_tail_todo);
+          incdep_head_todo = cur->next;
+        }
       else
-        incdep_head_todo = incdep_tail_todo = NULL;
+        {
+          assert (incdep_count_todo == 1);
+          assert (cur == incdep_tail_todo);
+          incdep_head_todo = incdep_tail_todo = NULL;
+        }
+      incdep_count_todo--;
       incdep_num_reading++;
 
       /* read the file. */
@@ -619,11 +665,22 @@ incdep_worker (int thrd)
 
       incdep_num_reading--;
       cur->next = NULL;
-      if (incdep_tail_done)
-        incdep_tail_done->next = cur;
+      tmp = incdep_tail_done;
+      if (tmp)
+        {
+          tmp->next = cur;
+          assert (incdep_count_done > 0);
+        }
       else
-        incdep_head_done = cur;
+        {
+          assert (!incdep_head_done);
+          assert (incdep_count_done == 0);
+          incdep_head_done = cur;
+        }
       incdep_tail_done = cur;
+      incdep_count_done++;
+
+      thrd_data->done_count++;
 
       incdep_signal_done ();
    }
@@ -865,6 +922,7 @@ void
 incdep_flush_and_term (void)
 {
   unsigned i;
+  unsigned total_done = 0;
 
   if (!incdep_initialized)
     return;
@@ -891,8 +949,19 @@ incdep_flush_and_term (void)
       alloccache_join (&dep_cache, &incdep_dep_caches[i]);
       strcache2_term (&incdep_dep_strcaches[i]);
       strcache2_term (&incdep_var_strcaches[i]);
+
+      /* accounting */
+      total_done += incdep_worker_data[i].done_count;
     }
   incdep_num_threads = 0;
+
+  /* sanity check */
+  if (total_done != incdep_worker_data[INCDEP_MAX_THREADS].flushed_count)
+    fprintf (stderr, "kmk/incdep: warning: total_done=%#x does not equal flushed_count=%#x!\n",
+             total_done, incdep_worker_data[INCDEP_MAX_THREADS].flushed_count);
+  if (total_done != incdep_worker_data[INCDEP_MAX_THREADS].todo_count)
+    fprintf (stderr, "kmk/incdep: warning: total_done=%#x does not equal todo_count=%#x!\n",
+             total_done, incdep_worker_data[INCDEP_MAX_THREADS].todo_count);
 
   /* destroy the lock and condition variables / event objects. */
 
@@ -1375,7 +1444,15 @@ incdep_unescape_and_cache_filename(struct incdep *curdep, char *start, const cha
       const char ch = *src++;
       if (ch != '\\' && ch != '$')
         {
-          if (!STOP_SET (ch, stop_mask))
+          if (!STOP_SET (ch, stop_mask)
+#ifdef HAVE_DOS_PATHS
+              || (    ch == ':'
+                   && (uintptr_t)src < (uintptr_t)end
+                   && (*src == '/' || *src == '\\')
+                   && (dst - start) == 1
+                   && isalpha ((unsigned char)*start))
+#endif
+             )
             *dst++ = ch;
           else
             {
@@ -2073,7 +2150,7 @@ eval_include_dep_file (struct incdep *curdep, floc *f)
                       }
                     else
                       filename = incdep_unescape_and_cache_filename (curdep, (char *)fnnext, fnend, 0, &fnnext, NULL);
-                    if (filename != filename_prev) /* clang optimization. */
+                    if (filename != filename_prev) /* clang optimization, it emit two targets for each dependency list. */
                       incdep_record_file (curdep, filename, incdep_dup_dep_list (curdep, deps), f);
                   }
             }
@@ -2089,27 +2166,43 @@ eval_include_dep_file (struct incdep *curdep, floc *f)
 static void
 incdep_flush_it (floc *f)
 {
+  struct incdep_worker_data *thrd_data = &incdep_worker_data[INCDEP_MAX_THREADS];
+
   incdep_lock ();
   for (;;)
     {
-      struct incdep *cur = incdep_head_done;
+      struct incdep *cur   = incdep_head_done;
+      unsigned int   count = incdep_count_done;
 
       /* if the done list is empty, grab a todo list entry. */
-      if (!cur && incdep_head_todo)
+      if (!cur)
         {
           cur = incdep_head_todo;
-          if (cur->next)
-            incdep_head_todo = cur->next;
-          else
-            incdep_head_todo = incdep_tail_todo = NULL;
-          incdep_unlock ();
+          if (cur)
+            {
+              if (cur->next)
+                {
+                  assert (incdep_count_todo > 1);
+                  assert (cur != incdep_tail_todo);
+                  incdep_head_todo = cur->next;
+                }
+              else
+                {
+                  assert (incdep_count_todo == 1);
+                  assert (cur == incdep_tail_todo);
+                  incdep_head_todo = incdep_tail_todo = NULL;
+                }
+              incdep_count_todo--;
+              thrd_data->todo_count--;
+              incdep_unlock ();
 
-          incdep_read_file (cur, f);
-          eval_include_dep_file (cur, f);
-          incdep_freeit (cur);
+              incdep_read_file (cur, f);
+              eval_include_dep_file (cur, f);
+              incdep_freeit (cur);
 
-          incdep_lock ();
-          continue;
+              incdep_lock ();
+              continue;
+            }
         }
 
       /* if the todo list and done list are empty we're either done
@@ -2125,19 +2218,25 @@ incdep_flush_it (floc *f)
 
       /* we grab the entire done list and work thru it. */
       incdep_head_done = incdep_tail_done = NULL;
+      incdep_count_done = 0;
+
       incdep_unlock ();
 
       while (cur)
         {
           struct incdep *next = cur->next;
+          assert (count > 0);
 #ifdef PARSE_IN_WORKER
           incdep_flush_recorded_instructions (cur);
 #else
           eval_include_dep_file (cur, f);
 #endif
           incdep_freeit (cur);
+          thrd_data->flushed_count++;
+          count--;
           cur = next;
         }
+      assert (count == 0);
 
       incdep_lock ();
     } /* outer loop */
@@ -2150,12 +2249,25 @@ incdep_flush_it (floc *f)
 void
 eval_include_dep (const char *names, floc *f, enum incdep_op op)
 {
+  struct incdep_worker_data *thrd_data = &incdep_worker_data[INCDEP_MAX_THREADS];
   struct incdep *head = 0;
   struct incdep *tail = 0;
   struct incdep *cur;
+  unsigned int count = 0;
   const char *names_iterator = names;
   const char *name;
   unsigned int name_len;
+
+#if 0 /* sanity / debug */
+  {
+    struct incdep *check, *checktail;
+    unsigned items;
+    for (items = 0, check = checktail = incdep_head_todo; check; check = check->next)
+      checktail = check, items++;
+    MY_ASSERT (items == incdep_count_todo);
+    MY_ASSERT (checktail == incdep_tail_todo);
+  }
+#endif
 
   /* loop through NAMES, creating a todo list out of them. */
 
@@ -2199,6 +2311,7 @@ eval_include_dep (const char *names, floc *f, enum incdep_op op)
        else
          head = cur;
        tail = cur;
+       count++;
     }
 
 #ifdef ELECTRIC_HEAP
@@ -2221,28 +2334,55 @@ eval_include_dep (const char *names, floc *f, enum incdep_op op)
     }
   else
     {
-      /* initialize the worker threads and related stuff the first time around. */
+      if (head)
+        {
+          struct incdep *tmp;
 
-      if (!incdep_initialized)
-        incdep_init (f);
+          /* initialize the worker threads and related stuff the first time around. */
 
-      /* queue the files and notify the worker threads. */
+          if (!incdep_initialized)
+            incdep_init (f);
 
-      incdep_lock ();
+          /* queue the files and notify the worker threads. */
 
-      if (incdep_tail_todo)
-        incdep_tail_todo->next = head;
-      else
-        incdep_head_todo = head;
-      incdep_tail_todo = tail;
+          incdep_lock ();
 
-      incdep_signal_todo ();
-      incdep_unlock ();
+          tmp = incdep_tail_todo;
+          if (tmp)
+            {
+              assert (incdep_count_todo > 0);
+              assert (incdep_head_todo != NULL);
+              tmp->next = head;
+            }
+          else
+            {
+              assert (incdep_count_todo == 0);
+              assert (incdep_head_todo == NULL);
+              incdep_head_todo = head;
+            }
+          incdep_tail_todo = tail;
+          incdep_count_todo += count;
+          thrd_data->todo_count += count;
 
-      /* flush the todo queue if we're requested to do so. */
+#if 0 /* sanity / debug */
+          {
+            struct incdep *check, *checktail;
+            unsigned items;
+            for (items = 0, check = checktail = incdep_head_todo; check; check = check->next)
+              checktail = check, items++;
+            MY_ASSERT (items == incdep_count_todo);
+            MY_ASSERT (checktail == incdep_tail_todo);
+          }
+#endif
 
-      if (op == incdep_flush)
-        incdep_flush_it (f);
+          incdep_signal_todo ();
+          incdep_unlock ();
+        }
+
+        /* flush the todo queue if we're requested to do so. */
+
+        if (op == incdep_flush)
+          incdep_flush_it (f);
     }
 }
 
