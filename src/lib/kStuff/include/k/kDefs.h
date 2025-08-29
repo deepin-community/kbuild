@@ -1,4 +1,4 @@
-/* $Id: kDefs.h 120 2022-02-18 02:00:53Z bird $ */
+/* $Id: kDefs.h 123 2024-11-02 23:41:24Z bird $ */
 /** @file
  * kTypes - Defines and Macros.
  */
@@ -196,8 +196,10 @@
 #define K_ARCH_RISCV_64         (13 | K_ARCH_BIT_64 | K_ARCH_END_LITTLE)
 /** 64-bit RISC-V, big endian. */
 #define K_ARCH_RISCV_64_BE      (13 | K_ARCH_BIT_64 | K_ARCH_END_BIG)
+/** 64-bit LoongArch. */
+#define K_ARCH_LOONGARCH_64     (14 | K_ARCH_BIT_64 | K_ARCH_END_LITTLE)
 /** The end of the valid architecture values (exclusive). */
-#define K_ARCH_MAX              (12+1)
+#define K_ARCH_MAX              (14+1)
 /** @} */
 
 
@@ -214,9 +216,9 @@
 #  define K_ARCH    K_ARCH_IA64
 # elif defined(__alpha__)
 #  define K_ARCH    K_ARCH_ALPHA
-# elif defined(__arm__) || defined(__arm32__)
+# elif defined(__arm__) || defined(__arm32__) || defined(_M_ARM)
 #  define K_ARCH    K_ARCH_ARM_32
-# elif defined(__aarch64__) || defined(__arm64__)
+# elif defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
 #  define K_ARCH    K_ARCH_ARM_64
 # elif defined(__hppa__) && defined(__LP64__)
 #  define K_ARCH    K_ARCH_PARISC_64
@@ -224,6 +226,8 @@
 #  define K_ARCH    K_ARCH_PARISC_32
 # elif defined(__m68k__)
 #  define K_ARCH    K_ARCH_M68K
+# elif defined(__loongarch64)
+#  define K_ARCH    K_ARCH_LOONGARCH_64
 # elif defined(__mips64)
 #  define K_ARCH    K_ARCH_MIPS_64
 # elif defined(__mips__)
@@ -364,6 +368,8 @@
 #  else
 #   error "Port Me or define K_ENDIAN."
 #  endif
+# elif defined(_MSC_VER) /* fix when encounter situation where this isn't the case... */
+#  define K_ENDIAN K_ENDIAN_LITTLE
 # else
 #  error "Port Me or define K_ENDIAN."
 # endif

@@ -20,3 +20,16 @@ Author: Gianfranco Costamagna <locutusofborg@debian.org>
  	esac
  done
  
+diff --git a/src/kmk/glob/fnmatch.c b/src/kmk/glob/fnmatch.c
+index b346e10..d7495c2 100644
+--- a/src/kmk/glob/fnmatch.c
++++ b/src/kmk/glob/fnmatch.c
+@@ -121,7 +121,7 @@ USA.  */
+    whose names are inconsistent.  */
+ 
+ # if !defined _LIBC && !defined getenv && !defined _MSC_VER
+-extern char *getenv ();
++extern char *getenv (const char*);
+ # endif
+ 
+ # ifndef errno

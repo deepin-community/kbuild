@@ -1,4 +1,4 @@
-/* $Id: winchildren.c 3359 2020-06-05 16:17:17Z bird $ */
+/* $Id: winchildren.c 3667 2025-02-21 14:36:48Z bird $ */
 /** @file
  * Child process creation and management for kmk.
  */
@@ -344,14 +344,25 @@ static MKWINCHILDCPUGROUPALLOCSTATE g_ProcessorGroupAllocator;
 static unsigned             g_cProcessorGroups = 1;
 /** Array detailing how many active processors there are in each group. */
 static unsigned const      *g_pacProcessorsInGroup = &g_cProcessorGroups;
+/** Info from the GetLogicalProcessorInformationEx call - can be NULL. */
+static GROUP_RELATIONSHIP const *g_pGroupInfo = NULL;
+
 /** Kernel32!GetActiveProcessorGroupCount */
 static WORD (WINAPI        *g_pfnGetActiveProcessorGroupCount)(VOID);
 /** Kernel32!GetActiveProcessorCount */
 static DWORD (WINAPI       *g_pfnGetActiveProcessorCount)(WORD);
+/** Kernel32!GetLogicalProcessorInformationEx */
+static DWORD (WINAPI       *g_pfnGetLogicalProcessorInformationEx)(LOGICAL_PROCESSOR_RELATIONSHIP,
+                                                                   PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, PDWORD);
 /** Kernel32!SetThreadGroupAffinity */
 static BOOL (WINAPI        *g_pfnSetThreadGroupAffinity)(HANDLE, CONST GROUP_AFFINITY *, GROUP_AFFINITY *);
+/** Kernel32!SetThreadSelectedCpuSetMasks (windows 11+).   */
+static BOOL (WINAPI        *g_pfnSetThreadSelectedCpuSetMasks)(HANDLE, PGROUP_AFFINITY, USHORT);
+/** Kernel32!SetProcessDefaultCpuSetMasks (windows 11+).   */
+static BOOL (WINAPI        *g_pfnSetProcessDefaultCpuSetMasks)(HANDLE, PGROUP_AFFINITY, USHORT);
 /** NTDLL!NtQueryInformationProcess */
 static NTSTATUS (NTAPI     *g_pfnNtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+
 /** Set if the windows host is 64-bit. */
 static BOOL                 g_f64BitHost = (K_ARCH_BITS == 64);
 /** Windows version info.
@@ -459,12 +470,16 @@ void MkWinChildInit(unsigned int cJobSlots)
     if (g_VersionInfo.dwMajorVersion >= 6)
     {
         hmod = GetModuleHandleA("KERNEL32.DLL");
-        *(FARPROC *)&g_pfnGetActiveProcessorGroupCount = GetProcAddress(hmod, "GetActiveProcessorGroupCount");
-        *(FARPROC *)&g_pfnGetActiveProcessorCount      = GetProcAddress(hmod, "GetActiveProcessorCount");
-        *(FARPROC *)&g_pfnSetThreadGroupAffinity       = GetProcAddress(hmod, "SetThreadGroupAffinity");
+        *(FARPROC *)&g_pfnGetActiveProcessorGroupCount     = GetProcAddress(hmod, "GetActiveProcessorGroupCount");
+        *(FARPROC *)&g_pfnGetActiveProcessorCount          = GetProcAddress(hmod, "GetActiveProcessorCount");
+        *(FARPROC *)&g_pfnSetThreadGroupAffinity           = GetProcAddress(hmod, "SetThreadGroupAffinity");
+        *(FARPROC *)&g_pfnGetLogicalProcessorInformationEx = GetProcAddress(hmod, "GetLogicalProcessorInformationEx");
+        *(FARPROC *)&g_pfnSetThreadSelectedCpuSetMasks      = GetProcAddress(hmod, "SetThreadSelectedCpuSetMasks"); /* W11 */
+        *(FARPROC *)&g_pfnSetProcessDefaultCpuSetMasks      = GetProcAddress(hmod, "SetProcessDefaultCpuSetMasks"); /* W11 */
         if (   g_pfnSetThreadGroupAffinity
             && g_pfnGetActiveProcessorCount
-            && g_pfnGetActiveProcessorGroupCount)
+            && g_pfnGetActiveProcessorGroupCount
+            && g_pfnGetLogicalProcessorInformationEx)
         {
             unsigned int *pacProcessorsInGroup;
             unsigned      iGroup;
@@ -477,13 +492,48 @@ void MkWinChildInit(unsigned int cJobSlots)
             for (iGroup = 0; iGroup < g_cProcessorGroups; iGroup++)
                 pacProcessorsInGroup[iGroup] = g_pfnGetActiveProcessorCount(iGroup);
 
+            /* Get active process group affinity masks so we can set them correctly. */
+            {
+                DWORD cbNeeded = cbNeeded = offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Group)
+                               + offsetof(GROUP_RELATIONSHIP, GroupInfo)
+                               + sizeof(PROCESSOR_GROUP_INFO) * (g_cProcessorGroups + 4);
+                PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX pInfo = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)xcalloc(cbNeeded);
+                BOOL fRet = g_pfnGetLogicalProcessorInformationEx(RelationGroup, pInfo, &cbNeeded);
+                if (!fRet && GetLastError() == ERROR_BUFFER_OVERFLOW)
+                {
+                    free(pInfo);
+                    pInfo = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)xcalloc(cbNeeded);
+                    fRet = g_pfnGetLogicalProcessorInformationEx(RelationGroup, pInfo, &cbNeeded);
+                }
+                if (   fRet
+                    && pInfo->Group.ActiveGroupCount > 0
+                    && pInfo->Group.ActiveGroupCount <= pInfo->Group.MaximumGroupCount)
+                {
+                    g_pGroupInfo = &pInfo->Group; /* leaked */
+                    pInfo = NULL;
+                }
+                else
+                    free(pInfo);
+            }
+
+            /* Iff this is windows 11 or later, the default policy should be that
+               threads can be scheduled in any CPU group, so reset any prior crap
+               to make sure this remains the case for us and our children.
+
+               This means we can skip g_pfnSetThreadGroupAffinity the calls later. */
+            if (g_pfnSetProcessDefaultCpuSetMasks)
+                g_pfnSetProcessDefaultCpuSetMasks(GetCurrentProcess(), NULL, 0);
+            if (g_pfnSetThreadSelectedCpuSetMasks)
+                g_pfnSetThreadSelectedCpuSetMasks(GetCurrentThread(), NULL, 0);
+
             MkWinChildInitCpuGroupAllocator(&g_ProcessorGroupAllocator);
         }
         else
         {
-            g_pfnSetThreadGroupAffinity       = NULL;
-            g_pfnGetActiveProcessorCount      = NULL;
-            g_pfnGetActiveProcessorGroupCount = NULL;
+            g_pfnSetThreadGroupAffinity           = NULL;
+            g_pfnGetActiveProcessorCount          = NULL;
+            g_pfnGetActiveProcessorGroupCount     = NULL;
+            g_pfnGetLogicalProcessorInformationEx = NULL;
         }
     }
 
@@ -1236,6 +1286,9 @@ static int mkWinChildcareWorkerCreateProcess(PWINCHILDCAREWORKER pWorker, WCHAR 
 #ifdef KMK
     extern int          process_priority;
 #endif
+#ifdef DEBUG_STDOUT_CLOSE_ISSUE
+    my_check_stdout("mkWinChildcareWorkerCreateProcess/entry");
+#endif
 
     /*
      * Populate startup info.
@@ -1340,9 +1393,11 @@ static int mkWinChildcareWorkerCreateProcess(PWINCHILDCAREWORKER pWorker, WCHAR 
          * Assign processor group (ignore failure).
          */
 #ifdef MKWINCHILD_DO_SET_PROCESSOR_GROUP
-        if (g_cProcessorGroups > 1)
+        if (g_cProcessorGroups > 1 && !g_pfnSetProcessDefaultCpuSetMasks)
         {
-            GROUP_AFFINITY Affinity = { 0 /* == all active apparently */, pWorker->iProcessorGroup, { 0, 0, 0 } };
+            GROUP_AFFINITY Affinity = { 0, pWorker->iProcessorGroup, { 0, 0, 0 } };
+            if (g_pGroupInfo && pWorker->iProcessorGroup < g_pGroupInfo->ActiveGroupCount)
+                Affinity.Mask = g_pGroupInfo->GroupInfo[pWorker->iProcessorGroup].ActiveProcessorMask;
             fRet = g_pfnSetThreadGroupAffinity(ProcInfo.hThread, &Affinity, NULL);
             assert(fRet);
         }
@@ -1397,6 +1452,9 @@ static int mkWinChildcareWorkerCreateProcess(PWINCHILDCAREWORKER pWorker, WCHAR 
      */
     CloseHandle(ProcInfo.hThread);
     kmk_cache_exec_image_w(pwszImageName);
+#ifdef DEBUG_STDOUT_CLOSE_ISSUE
+    my_check_stdout("mkWinChildcareWorkerCreateProcess/tail");
+#endif
     return 0;
 }
 
@@ -2558,10 +2616,14 @@ static unsigned int __stdcall mkWinChildcareWorkerThread(void *pvUser)
      *       active processors.  Couldn't find any alternative API for getting
      *       the correct active processor mask.
      */
-    if (g_cProcessorGroups > 1)
+    if (g_cProcessorGroups > 1 && !g_pfnSetProcessDefaultCpuSetMasks)
     {
-        GROUP_AFFINITY Affinity = { 0 /* == all active apparently */, pWorker->iProcessorGroup, { 0, 0, 0 } };
-        BOOL fRet = g_pfnSetThreadGroupAffinity(GetCurrentThread(), &Affinity, NULL);
+        BOOL           fRet;
+        GROUP_AFFINITY Affinity = { 0, pWorker->iProcessorGroup, { 0, 0, 0 } };
+        if (g_pGroupInfo && pWorker->iProcessorGroup < g_pGroupInfo->ActiveGroupCount)
+            Affinity.Mask = g_pGroupInfo->GroupInfo[pWorker->iProcessorGroup].ActiveProcessorMask;
+
+        fRet = g_pfnSetThreadGroupAffinity(GetCurrentThread(), &Affinity, NULL);
         assert(fRet); (void)fRet;
 # ifndef NDEBUG
         {
@@ -2612,6 +2674,9 @@ static unsigned int __stdcall mkWinChildcareWorkerThread(void *pvUser)
              * We got work to do.  First job is to deque the job.
              */
             pChild = mkWinChildDequeFromLifo(&pWorker->pTailTodoChildren, pChild);
+#ifdef DEBUG_STDOUT_CLOSE_ISSUE
+            my_check_stdout("mkWinChildcareWorkerThread/deque");
+#endif
             assert(pChild);
             if (pChild)
             {
@@ -2623,19 +2688,34 @@ static unsigned int __stdcall mkWinChildcareWorkerThread(void *pvUser)
                 {
                     case WINCHILDTYPE_PROCESS:
                         mkWinChildcareWorkerThreadHandleProcess(pWorker, pChild);
+#ifdef DEBUG_STDOUT_CLOSE_ISSUE
+                        my_check_stdout("mkWinChildcareWorkerThread/done-process");
+#endif
                         break;
 #ifdef KMK
                     case WINCHILDTYPE_BUILT_IN:
                         mkWinChildcareWorkerThreadHandleBuiltIn(pWorker, pChild);
+# ifdef DEBUG_STDOUT_CLOSE_ISSUE
+                        my_check_stdout("mkWinChildcareWorkerThread/done-built-in");
+# endif
                         break;
                     case WINCHILDTYPE_APPEND:
                         mkWinChildcareWorkerThreadHandleAppend(pWorker, pChild);
+# ifdef DEBUG_STDOUT_CLOSE_ISSUE
+                        my_check_stdout("mkWinChildcareWorkerThread/done-append");
+# endif
                         break;
                     case WINCHILDTYPE_SUBMIT:
                         mkWinChildcareWorkerThreadHandleSubmit(pWorker, pChild);
+# ifdef DEBUG_STDOUT_CLOSE_ISSUE
+                        my_check_stdout("mkWinChildcareWorkerThread/done-submit");
+# endif
                         break;
                     case WINCHILDTYPE_REDIRECT:
                         mkWinChildcareWorkerThreadHandleRedirect(pWorker, pChild);
+# ifdef DEBUG_STDOUT_CLOSE_ISSUE
+                        my_check_stdout("mkWinChildcareWorkerThread/done-redirect");
+# endif
                         break;
 #endif
                     default:
@@ -3532,6 +3612,9 @@ int MkWinChildKill(pid_t pid, int iSignal, struct child *pMkChild)
 int MkWinChildWait(int fBlock, pid_t *pPid, int *piExitCode, int *piSignal, int *pfCoreDumped, struct child **ppMkChild)
 {
     PWINCHILD pChild;
+#ifdef DEBUG_STDOUT_CLOSE_ISSUE
+    my_check_stdout ("MkWinChildWait/entry");
+#endif
 
     *pPid         = 0;
     *piExitCode   = -222222;
@@ -3544,6 +3627,9 @@ int MkWinChildWait(int fBlock, pid_t *pPid, int *piExitCode, int *piSignal, int 
     if (fBlock && !g_pTailCompletedChildren && g_cPendingChildren > 0)
     {
         DWORD dwStatus = WaitForSingleObject(g_hEvtWaitChildren, INFINITE);
+#ifdef DEBUG_STDOUT_CLOSE_ISSUE
+        my_check_stdout ("MkWinChildWait/wakeup");
+#endif
         if (dwStatus == WAIT_FAILED)
             return (int)GetLastError();
     }
@@ -3584,6 +3670,9 @@ int MkWinChildWait(int fBlock, pid_t *pPid, int *piExitCode, int *piSignal, int 
     /* Flush the volatile directory cache. */
     dir_cache_invalid_after_job();
 #endif
+#ifdef DEBUG_STDOUT_CLOSE_ISSUE
+    my_check_stdout ("MkWinChildWait/tail");
+#endif
     return 0;
 }
 
@@ -3621,6 +3710,9 @@ void MkWinChildReExecMake(char **papszArgs, char **papszEnv)
     WCHAR                  *pwszzEnvironment;
     WCHAR                  *pwszPathIgnored;
     int                     rc;
+#ifdef DEBUG_STDOUT_CLOSE_ISSUE
+    my_check_stdout("MkWinChildReExecMake/entry");
+#endif
 
     /*
      * Get the executable name.
@@ -3687,6 +3779,9 @@ void MkWinChildReExecMake(char **papszArgs, char **papszEnv)
             dwExitCode = dwStatus;
 
         CloseHandle(ProcInfo.hProcess);
+#ifdef DEBUG_STDOUT_CLOSE_ISSUE
+        my_check_stdout("MkWinChildReExecMake/exit");
+#endif
         for (;;)
             exit(dwExitCode);
     }
